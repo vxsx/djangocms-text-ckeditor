@@ -1,14 +1,16 @@
+<<<<<<< HEAD
 from functools import update_wrapper
 
 from cms import __version__ as cms_version
 from cms.plugin_base import CMSPluginBase
 from cms.plugin_pool import plugin_pool
-from cms.utils.compat.dj import force_unicode
+from cms.utils.placeholder import get_toolbar_plugin_struct
 from cms.utils.urlutils import admin_reverse
 from django.contrib.admin import site
 from django.forms.fields import CharField
 from django.http import (
     HttpResponse, HttpResponseRedirect, HttpResponseBadRequest)
+from django.utils.encoding import force_text
 from django.utils.translation import ugettext_lazy as _
 from django.shortcuts import render
 
@@ -67,7 +69,7 @@ class TextPlugin(CMSPluginBase):
         try:
             plugin_class = plugin_pool.get_plugin(plugin_type)
         except KeyError:
-            return HttpResponseBadRequest(force_unicode(
+            return HttpResponseBadRequest(force_text(
                 _("Invalid plugin type '%s'") % plugin_type
             ))
 
@@ -131,9 +133,14 @@ class TextPlugin(CMSPluginBase):
         )
 
     def get_form(self, request, obj=None, **kwargs):
-        plugins = plugin_pool.get_text_enabled_plugins(
+        plugins = get_toolbar_plugin_struct(
+                plugin_pool.get_text_enabled_plugins(
+                self.placeholder.slot,
+                self.page
+            ),
             self.placeholder.slot,
-            self.page
+            self.page,
+            parent=TextPlugin
         )
         pk = self.cms_plugin_instance.pk
         form = self.get_form_class(request, plugins, pk, self.cms_plugin_instance.placeholder,
@@ -163,8 +170,12 @@ class TextPlugin(CMSPluginBase):
         return context
 
     def save_model(self, request, obj, form, change):
-        obj.clean_plugins()
         super(TextPlugin, self).save_model(request, obj, form, change)
+        # This must come after calling save
+        # If `clean_plugins()` deletes child plugins, django-treebeard will call
+        # save() again on the Text instance (aka obj in this context) to update mptt values (numchild, etc).
+        # See this ticket for details https://github.com/divio/djangocms-text-ckeditor/issues/212
+        obj.clean_plugins()
 
 
 plugin_pool.register_plugin(TextPlugin)

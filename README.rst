@@ -15,14 +15,20 @@ Text Plugin for django-cms with CK-Editor
 Installation
 ------------
 
-This plugin requires `django CMS` 2.3 or higher to be properly installed.
+This plugin requires `django CMS` 3.0 or higher to be properly installed.
 
 * In your projects `virtualenv`, run ``pip install djangocms-text-ckeditor``.
-* Add ``'djangocms_text_ckeditor'`` to your ``INSTALLED_APPS`` setting **BEFORE** the ``cms`` entry.
-* If using Django 1.7 add ``'djangocms_text_ckeditor': 'djangocms_text_ckeditor.migrations_django',``
-  to ``MIGRATION_MODULES``  (or define ``MIGRATION_MODULES`` if it does not exists);
-  when django CMS 3.1 will be released, migrations for Django 1.7 will be moved
-  to the standard location and the south-style ones to ``south_migrations``.
+* If upgrading from previous ``djangocms_text_ckeditor``, be aware that the
+  names of the migration modules have changed:
+
+  * Django 1.6: ``djangocms_text_ckeditor.migrations`` to
+    ``djangocms_text_ckeditor.south_migrations``
+  * Django 1.7: ``djangocms_text_ckeditor.migrations_django`` to
+    ``djangocms_text_ckeditor.migrations``
+* If using Django 1.6 add ``'djangocms_text_ckeditor': 'djangocms_text_ckeditor.south_migrations',``
+  to ``SOUTH_MIGRATION_MODULES``  (or define ``SOUTH_MIGRATION_MODULES`` if it does not exists);
+* If using Django 1.7 and you were using version prior to 2.5, remove
+  ``djangocms_text_ckeditor`` from ``MIGRATION_MODULES``;
 * Run ``manage.py migrate djangocms_text_ckeditor``.
 
 Upgrading from ``cms.plugins.text``
@@ -102,7 +108,7 @@ To customize the plugin editor, use `toolbar_CMS` attribute, as in::
             ['Undo', 'Redo'],
             ['cmsplugins', '-', 'ShowBlocks'],
             ['Format', 'Styles'],
-        ]
+        ],
         'skin': 'moono',
     }
 
@@ -118,7 +124,7 @@ models, use `toolbar_HTMLField` attribute::
             ['Undo', 'Redo'],
             ['ShowBlocks'],
             ['Format', 'Styles'],
-        ]
+        ],
         'skin': 'moono',
     }
 
@@ -215,6 +221,22 @@ and configure the placeholder to only accept TextPlugin. For more information on
 http://django-cms.readthedocs.org/en/latest/extending_cms/placeholders.html
 
 
+Auto Hyphenate Text
+-------------------
+
+You can hyphenate the text entered into the editor, so that the HTML entity ``&shy;`` (soft-hyphen_)
+automatically is added in between words, at the correct syllable boundary.
+
+To activate this feature, ``pip install django-softhyphen``. In ``settings.py`` add ``'softhyphen'``
+to the list of ``INSTALLED_APPS``. django-softhyphen_ also installs hyphening dictionaries for 25
+natural languages.
+
+In case you already installed ``django-softhyphen`` but do not want to soft hyphenate, set
+``TEXT_AUTO_HYPHENATE`` to ``False``.
+
+.. _soft-hyphen: http://www.w3.org/TR/html4/struct/text.html#h-9.3.3
+.. _django-softhyphen: https://github.com/datadesk/django-softhyphen
+
 Extending the plugin
 --------------------
 
@@ -285,7 +307,7 @@ you may customize the tags and attributes allowed by overriding the
 ``TEXT_ADDITIONAL_TAGS`` and ``TEXT_ADDITIONAL_ATTRIBUTES`` settings::
 
     TEXT_ADDITIONAL_TAGS = ('iframe',)
-    TEXT_ADDITIONAL_TAGS = ('scrolling', 'allowfullscreen', 'frameborder')
+    TEXT_ADDITIONAL_ATTRIBUTES = ('scrolling', 'allowfullscreen', 'frameborder')
 
 **NOTE**: Some versions of CKEditor will pre-sanitize your text before passing it to the web server,
 rendering the above settings useless. To ensure this does not happen, you may need to add the
