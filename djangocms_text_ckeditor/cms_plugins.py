@@ -5,9 +5,13 @@ from cms.plugin_base import CMSPluginBase
 from cms.plugin_pool import plugin_pool
 from cms.utils.placeholder import get_toolbar_plugin_struct
 from cms.utils.urlutils import admin_reverse
+from django.conf.urls import url
+from django.core import signing
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.core.urlresolvers import reverse
 from django.forms.fields import CharField
 from django.http import (
+    HttpResponse,
     HttpResponseRedirect,
     HttpResponseForbidden,
     HttpResponseBadRequest,
@@ -16,7 +20,7 @@ from django.utils.encoding import force_text
 from django.utils.translation import ugettext
 
 from . import settings
-from .forms import TextForm
+from .forms import DeleteOnCancelForm, TextForm
 from .models import Text
 from .utils import plugin_tags_to_user_html
 from .widgets import TextEditorWidget
@@ -32,28 +36,45 @@ class TextPlugin(CMSPluginBase):
     ckeditor_configuration = settings.TEXT_CKEDITOR_CONFIGURATION
     disable_child_plugins = True
 
-    def get_editor_widget(self, request, plugins, pk, placeholder, language):
+    def get_editor_widget(self, request, plugins, plugin):
         """
         Returns the Django form Widget to be used for
         the text area
         """
-        return TextEditorWidget(installed_plugins=plugins, pk=pk,
-                                placeholder=placeholder,
-                                plugin_language=language,
-                                configuration=self.ckeditor_configuration)
+        cancel_url_name = self.get_admin_url_name('delete_on_cancel')
+        cancel_url = reverse('admin:%s' % cancel_url_name)
 
-    def get_form_class(self, request, plugins, pk, placeholder, language):
+        instance = plugin.get_plugin_instance()[0]
+
+        if 'delete-on-cancel' in request.GET and not instance:
+            cancel_token = self.get_cancel_token(plugin)
+        else:
+            cancel_token = None
+
+        widget = TextEditorWidget(
+            installed_plugins=plugins, pk=plugin.pk,
+            placeholder=plugin.placeholder,
+            plugin_language=plugin.language,
+            configuration=self.ckeditor_configuration,
+            cancel_url=cancel_url,
+            cancel_token=cancel_token,
+        )
+        return widget
+
+    def get_form_class(self, request, plugins, plugin):
         """
         Returns a subclass of Form to be used by this plugin
         """
+        widget = self.get_editor_widget(
+            request=request,
+            plugins=plugins,
+            plugin=plugin,
+        )
+
         # We avoid mutating the Form declared above by subclassing
         class TextPluginForm(self.form):
-            pass
+            body = CharField(widget=widget, required=False)
 
-        widget = self.get_editor_widget(request, plugins, pk, placeholder, language)
-        TextPluginForm.declared_fields["body"] = CharField(
-            widget=widget, required=False
-        )
         return TextPluginForm
 
     def add_view(self, request, form_url='', extra_context=None):
@@ -82,26 +103,79 @@ class TextPlugin(CMSPluginBase):
         except ValidationError as error:
             return HttpResponseBadRequest(error.message)
 
-        parent = data.get('plugin_parent')
-
-        if parent:
-            position = parent.cmsplugin_set.count()
-        else:
-            position = CMSPlugin.objects.filter(
-                parent__isnull=True,
-                language=data['plugin_language'],
-                placeholder=data['placeholder_id'],
-            ).count()
-
         plugin = CMSPlugin.objects.create(
             language=data['plugin_language'],
             plugin_type=data['plugin_type'],
-            position=position,
-            placeholder=data['placeholder_id']
+            position=data['position'],
+            placeholder=data['placeholder_id'],
+            parent=data.get('plugin_parent'),
         )
-        return HttpResponseRedirect(
-            admin_reverse('cms_page_edit_plugin', args=(plugin.pk,))
-        )
+        success_url = admin_reverse('cms_page_edit_plugin', args=(plugin.pk,))
+        success_url += '?delete-on-cancel'
+        return HttpResponseRedirect(success_url)
+
+    def get_plugin_urls(self):
+        def pattern(regex, func):
+            name = self.get_admin_url_name(func.__name__)
+            return url(regex, func, name=name)
+
+        url_patterns = [
+            # pattern(r'add-child-plugin/$', self.add_child_plugin),
+            pattern(r'delete-on-cancel/$', self.delete_on_cancel),
+        ]
+        return url_patterns
+
+    def get_admin_url_name(self, name):
+        model_name = self.model._meta.model_name
+        url_name = "%s_%s_%s" % (self.model._meta.app_label, model_name, name)
+        return url_name
+
+    def has_permission(self, request):
+        return request.user.is_active and request.user.is_staff
+
+    def add_child_plugin(self, request):
+        if not self.has_permission(request):
+            message = ugettext("Unable to process your request. "
+                       "You don't have the required permissions.")
+            return HttpResponseForbidden(force_text(message))
+
+    def delete_on_cancel(self, request):
+        if not self.has_permission(request):
+            message = ugettext("Unable to process your request. "
+                       "You don't have the required permissions.")
+            return HttpResponseForbidden(force_text(message))
+
+        plugin_type = self.__class__.__name__
+        form = DeleteOnCancelForm(request.POST,text_plugin_type=plugin_type)
+
+        if not form.is_valid():
+            error = list(form.errors.values())[0]
+            return HttpResponseBadRequest(error)
+
+        plugin = form.cleaned_data['plugin']
+
+        if plugin.plugin_type == plugin_type:
+            has_add_permission = self.has_add_permission(request)
+        else:
+            plugin_class = plugin.get_plugin_class_instance()
+            has_add_permission = plugin_class.has_add_permission(request)
+
+        placeholder = plugin.placeholder
+
+        if not (has_add_permission
+                and placeholder.has_add_permission(request)):
+            message = ugettext("Unable to process your request. "
+                               "You don't have the required permissions.")
+            return HttpResponseForbidden(force_text(message))
+        elif form.is_valid_token():
+            # Token needs to be validated after checking permissions
+            # to avoid non-auth users from triggering validation mechanism.
+            plugin.delete()
+            # 204 -> request was successful but no response returned.
+            return HttpResponse(status=204)
+        else:
+            message = ugettext("Unable to process your request. Invalid token.")
+            return HttpResponseBadRequest(force_text(message))
 
     def get_form(self, request, obj=None, **kwargs):
         plugins = get_toolbar_plugin_struct(
@@ -113,9 +187,11 @@ class TextPlugin(CMSPluginBase):
             self.page,
             parent=self.__class__
         )
-        pk = self.cms_plugin_instance.pk
-        form = self.get_form_class(request, plugins, pk, self.cms_plugin_instance.placeholder,
-                                   self.cms_plugin_instance.language)
+        form = self.get_form_class(
+            request=request,
+            plugins=plugins,
+            plugin=self.cms_plugin_instance,
+        )
         kwargs['form'] = form  # override standard form
         return super(TextPlugin, self).get_form(request, obj, **kwargs)
 
@@ -147,6 +223,13 @@ class TextPlugin(CMSPluginBase):
         # save() again on the Text instance (aka obj in this context) to update mptt values (numchild, etc).
         # See this ticket for details https://github.com/divio/djangocms-text-ckeditor/issues/212
         obj.clean_plugins()
+
+    def get_cancel_token(self, obj):
+        # Using the plugin type as salt
+        # ensures the token is unique for this type
+        # of plugin and cannot be used for others.
+        signer = signing.Signer(salt=obj.plugin_type)
+        return signer.sign(obj.pk).split(':')[1]
 
 
 plugin_pool.register_plugin(TextPlugin)
